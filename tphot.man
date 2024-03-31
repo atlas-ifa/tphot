@@ -1,0 +1,666 @@
+.nf
+NAME:
+	tphot - find and fit objects in an image
+
+SYNOPSIS:
+	tphot image_file [options]
+
+DESCRIPTION: 
+	Tphot runs through an image and finds objects that exceed a
+	specified threshold and meet other criteria.  It can read
+	either FITS or NITF files and should detect the format
+	automatically, although a flag is provided to enforce the
+	choice.
+
+	Tphot uses a very simple trigger to consider the possibility
+	that a pixel configuration might be an "detection", namely the
+	pixel must be a local maximum over a specified radius (default
+	is a radius of 5 pixels) and it has to exceed a specified
+	threshold.  This threshold is the higher of a specified minimum
+	(default 100) and some number of sigma (default 5) above sky
+	level.  Any pixel above another maximum threshold (default
+	100000) is also disqualified for consideration.
+
+	Note that this "sigma above sky level" refers a single pixel's
+	value and sky and sky noise are determined by a global look at
+	the pixel distribution.  Therefore faint objects of high SNR
+	may only show up at "sigma 1" or lower, depending on the size
+	of the PSF, and if the sky level is non-uniform triggers will
+	not correspond to a uniform sensitivity level.  For faint
+	objects you must set a low trigger for fits and then use
+	"-snr" to filter the resulting SNR.  See below for the "-smooth"
+	option to apply a Gaussian matched filter for source triggers.
+
+	The noise of the image data is assumed to follow Poisson
+	statistics according to the data level, plus a read noise
+	added in quadrature.  Tphot implements this by use of two
+	parameters, "eadu" and "bias".  eadu (default 1) is the
+	"electrons per ADU" in the image, defined as the ratio between
+	data value and data noise variance, in ADU.  The image may
+	have an additive offset (bias>0), or the sky level may have
+	been subtracted (bias<0).  The bias (default 0) is subtracted
+	from the image before analysis is done on it.  Since a read
+	noise is a constant, additive noise component, tphot assumes
+	that the sky level has been adjusted to apply it, perhaps by
+	use of the bias level parameter.  The noise is calculated
+	from the resulting (bias adjusted) NET_SKY = IMGBCK-BIAS level:
+
+		Noise_RMS[ADU] = sqrt{ NET_SKY[ADU] / EADU) }
+
+	As a specific example, suppose the image has e/ADU of 5, an
+	electronic offset bias of 1000 ADU, and a read noise of 10 e-.
+	We use "-eadu 5" and "-bias 980" where 980 = 1000 - 10^2/5,
+	i.e. tphot will be presented with a sky level that has been
+	enhanced by RN^2/EADU implementing the read noise.  As another
+	example, suppose we have e/ADU of 5, the same read noise, and
+	the image has mean zero but we know that a sky level of 250
+	ADU has been subtracted.  We would then use "-eadu 5" and
+	"-bias -270", where 270 = 250 + 10^2/5, and -270 will be
+	subtracted from the image before object detection.
+
+	You may use "-eadu auto" (the default) to ask tphot to
+	determine an e/ADU value from the data RMS as the median
+	image background divided by the median variance.  This assumes
+
+	  a) the background image level is sky level (ADU), once any
+	     bias parameter has been subtracted, and
+
+	  b) the read noise is negligible.
+
+	Note that the default "-eadu auto" will produce inaccurate results
+	for images with zero mean unless it is offset from zero using
+	"-bias -N" because it estimates eADU ~ Mean / Noise^2.  If your
+	image has zero mean be sure to supply a value for eADU or else a
+	background level.
+
+	You may bypass the normal tphot noise model by providing an external
+	file of weights "-wgt fname" or variance "-var fname".  Weights are
+	normally an image of inverse variance values for each pixel.
+	Alternatively if your data are provided as a 3D FITS file with the
+	image in the first z plane and the variance in the second z plane, you
+	may inform tphot with the "-var3d" option and it will use the inverse
+	variance as the pixel weight.  A variance value less than equal to 0
+	is given zero weight.  (Note that the binning option does not use the
+	weights for the average - it is just the pixel sum.)
+
+	The "-smooth X" option can be used to use a copy of the image
+	that has been smoothed by a Gaussian of FWHM X for the triggers.
+	This can provide something of a matched filter for detecting
+	objects at a requested significance.  The variance for each of
+	these triggers is still derived from the uncorrelated noise
+	model and the subsequent pixel fit is performed on the unsmoothed
+	data, so a bit of experimentation and scaling may be required
+	with this option.
+	
+	An alternative to searching the image for pixels that pass the
+	trigger threshold, you may specify an input file using "-obj"
+	that has a list of x,y values in the first two columns.  Lines
+	starting with # are ignored as comments.  This allows an external
+	list of object positions to be vetted with Waussian fits, and it
+	also can be used with multiple runs of tphot to improve accuracy.
+	For example, a first run of tphot that searches the image can
+	create a set of raw trigger positions.  These can be sorted in
+	descending order of peak brightness and tphot can be rerun
+	on this list with the "-subtract" option enabled so that as the
+	brightest objects are fitted their fit is subtracted reducing their
+	interference with nearby, fainter objects.
+
+	It is also possible to provide initial guesses for major axis FWHM,
+	minor axis FWHM, and angle phi (deg CCW from x) in the "-obj" file:
+	provide x, y, major, minor, and phi on each line and tell tphot
+	you have done so with "-ninit 5".
+
+	Once a pixel is designated as a candidate object center, tphot
+	carefully determines a good value for the local sky background
+	and adds up the total flux in the object within a specified
+	aperture.  Tphot also executes a rather elaborate routine to
+	do a two dimensional, least squares fit of a "Waussian"
+	function (Gaussian truncated at r^6) (a reasonable match to
+	normal atmospheric PSFs).
+
+	The results of this fit are then subjected to further tests
+	that may reject it as a "real object".  The defaults for these
+	are fairly non-stringent, and any given application should tune
+	them up for high detection probability and low false alarm rate.
+
+ 	 1. If the PSF fitting routine returned an error, even taking too
+	    many iterations, the object may be rejected ("-okfit").
+
+	 2. If the fitted center location (normally accurate to
+	    approximately the FWHM divided by SNR) lies outside of the
+	    image, the object is rejected.
+
+	 3. If the fitted center moves from the highest pixel by more than
+	    a specified value, the object is rejected ("-move").
+
+	 4. If the FWHM lies outside of a range, the object is rejected
+	    ("-fwmin" and "-fwmax").
+
+	 5. If the object's fitted peak value in excess of sky does not
+	    exceed a minimum value, the object is rejected ("-net").
+
+	 6. If the SNR of an object's flux does not surpass a threshold
+	    the object is rejected ("-snr").  Note that the default snr
+	    (-1) permits negative fluxes or flux errors.  This test is
+	    applied to the aperture flux determination, not the PSF fit.
+
+	 7. If chi^2/N of the fit exceeds a threshold the object is
+	    rejected ("-chin").  Note that chi^2/N can be much bigger
+	    than unity for a good fit to bright objects -- a Waussian
+	    is not always a perfect fit.  Also, chi^2/N may be larger
+	    than unity if the noise model is inaccurate.
+
+	Any object that passes all these tests is reported to the
+	output (nominally stdout, but a file can be specified).  The
+	values returned are:
+	
+	  x       = x central position [pix, left pixel center is 0.5]
+	  y       = y central position [pix, lower pixel center is 0.5]
+	  peakval = data value of the brightest pixel [ADU]
+	  skyval  = robust estimate of the local sky [ADU]
+	  peakfit = peak of the Waussian fit (in excess of sky) [ADU]
+	  dpeak   = uncertainty in the Waussian peak [ADU]
+	  skyfit  = sky value of the Waussian fit [ADU]
+	  flux    = net aperture flux of this object [ADU]
+	  dflux   = flux uncertainty [ADU]
+	  major   = major axis FWHM (or trail length) [pix]
+	  minor   = minor axis FWHM (or trail FWHM) [pix]
+	  phi     = angle of major axis, CCW from x axis [deg]
+	  err     = error flag
+	  chi/N   = chi^2/N 
+
+	Note that the coordinates use the "TSK" convention, meaning
+	that the center of the lower left pixel is (0.5,0.5).
+	Although a bit more complex for some operations than systems
+	that treat pixels as points and assign (0,0) or (1,1) to the
+	center of the lower left pixel, the TSK convention of treating
+	a pixel as a finite-size square is far more suitable for
+	operations at a sub-pixel level.  Pixel indices are address
+	offsets and start at (0,0).
+
+	It is important to appreciate that the reported flux and error
+	are summed up within an aperture radius "-aprad", whereas the
+	PSF parameters come from the Waussian fit, and they are not
+	the same.  The "-okfit" flag allows objects for which the PSF
+	fit failed, but the flux determination was probably correct.
+	The flux summation is done very carefully, attempting to
+	determine the local sky level very well, but it is an aperture
+	flux and therefore subject to more noise than a PSF fit.
+
+	The aperture radius should normally be in the range of 2*FWHM
+	to 4*FWHM.  A bigger aperture captures more flux from the wing
+	of the PSF but incurs more noise and is slower to compute.
+	Although 1.5*FWHM gives roughly optimal SNR for aperture
+	photometry, it only captures a fraction of the light and the
+	user should not use aperture photometry for both optimal SNR
+	flux determination as well as full-PSF photometry.  Using the
+	ratio of profile fit flux to large aperture photometry provides
+	the best combination of SNR and full-PSF flux accuracy.
+
+	The sky radius is normally in the range of 5*FWHM to 10*FWHM.  It
+	should be well out on the wing of the PSF.  Bigger sky radius
+	is less contaminated by the object but is less accurate for
+	the sky directly under the object and is slower to compute.
+	The sky determination fits a 1/r^3 profile around the object,
+	so the sky radius does not need to be completely beyond any
+	PSF light.  (Fitting the wings of the PSF profile for aperture
+	photometry is an unusual feature of tphot.  Although some light
+	will be lost from the PSF within any aperture, at least the sky
+	level is not biased by the PSF wings.)
+
+	The Waussian fit parameters can be converted to a flux by
+	applying the mean ratio between aperture flux and
+	(peak*major*minor) for bright objects.  The integral of a
+	Waussian is about 1.17*peak*major*minor, distinctly bigger
+	than the factor of 0.88 for a Gaussian.  However mismatch between
+	Waussian and true PSF is likely to corrupt absolute photometry
+	at the percent level or more, whereas relative photometry
+	from two Waussian fits can easily be better than the percent
+	level.  This is the reason that two different peak and sky
+	levels are reported.  The first is the actual peak data value
+	(plus sky) and careful, local determination of sky level.  The
+	second is the result of the Waussian fit and can sometimes be
+	quite peculiar, given covariances.
+
+	By default the Waussian fit is done with 7 parameters: two
+	center parameters, peak, sky, and three PSF shape parameters.
+	For faint objects these may be ill constrained.  You may use
+	the "-major", "-minor", and "-phi" arguments to specify a PSF
+	shape for all objects in the field and request tphot to fit
+	only for the remaining 4 parameters.  Multiple runs of
+	tphot with different choices of argument can be used to
+	perform 7 parameter fits to all objects of sufficient SNR,
+	determine average PSF parameters, and then rerun a 4 parameter
+	fit with PSF parameters fixed.  The "-psfpoly" option provides
+	a means to specify major,minor,phi as a polynomial function
+	over the field.
+
+	It is also possible to do "forced photometry", i.e. a two
+	parameter fit for just peak and sky, by specifying "-npar 2",
+	"-major", "-minor", "-phi", and file of object positions.  The
+	output is still subjected to the various acceptance tests, and
+	even though the default value for "-snr" is -1, so it will
+	always succeed, the results may fail other tests, such as
+	negative peak value.  If you want output regardless of
+	acceptance testing you should use the "-force" option.
+
+	NOTE that if you are going to do "forced photometry" you
+	should ignore any of the "flux" and "dflux" results and use
+	only the "peakfit" and "dpeak" for flux and uncertainty
+	values.  The total PSF flux can be derived from the peak,
+	major, and minor axis values, with the factor of 1.17 above.
+	Also note that if you really want to relate "peak*maj*min" to
+	total PSF flux you should use an "(ap-fit)" value derived from
+	bright stars, i.e.  flux / (peak*maj*min), not just the
+	integral of a Waussian.
+
+	Tphot offers the option to fit a "trailed Waussian" instead of
+	two dimensional Waussian.  In this case the model function is
+	(approximately) a line segment convolved with a Waussian.  The
+	"major axis" is the trail length, the "minor axis" is the PSF
+	FWHM, and "phi" is the angle of the trail with respect to the
+	x axis.  The reported position is the center of the trail.
+	Note that the model is not exactly a convolution so trail
+	length is biased slightly too short by about 25% of FWHM.
+
+	When tphot fits a trailed Waussian, it calculates the aperture
+	flux in a lozenge shape around the fitted trail, again using
+	the "-aprad" and "-skyrad" arguments.  The lozenge consists of
+	a rotated rectangle of half-width "-aprad" and length the
+	determination of trail length, with circular endcaps of radius
+	"-aprad".
+
+	If requested with the "-subtract" argument, tphot will subtract
+	fits from the image as objects are identified and pass the
+	acceptance criteria.  This can be particularly useful if the
+	objects occur in order of brightness.  Another argument, "-resid",
+	can be invoked with a filename to ask tphot to write a FITS
+	image of the data with the fits to all stars subtracted.  This
+	can be exceedingly useful for diagnosis or for removal of bright
+	objects that interfere with fainter ones (by rerunning tphot
+	on the residual image with adjusted control parameters).
+
+	Tphot can also calculate moments for each object that passes
+	the tests and is written to the normal output file.  These
+	moments use the flux in the image in excess of the (robust)
+	sky estimate from the aperture flux calculation.  The centroid
+	is determined by summing to a radius of the aprad parameter as
+	well as the "Kron radius", the intensity weighted average
+	radius.  The total flux and various other moments are calculated
+	within a radius of 2.5*rKron, and the output also gives the
+	projection of these moments along the radial direction from the
+	center of the image.  The moment output file lists:
+
+	  x,y       identical to x,y from the normal output file
+	  cx,cy     centroid x,y, calculated within a radius of aprad
+	  xpk,ypk   highest pixel within a radius of aprad
+	  rKron     "Kron radius" and "Variance radius", the intensity
+          rVar        weighted avg radius and RMS radius, summed within aprad
+	  flux      summed flux within 2.5*rKron
+	  Crad      average squared radius wrt highest pixel,
+                      radial component from image center [pix^2]
+	  Qrad      quadrupole, radial component from image center [pix^2]
+	  Trad      trefoil, radial component from image center [pix^2]
+	  Q2        qverage squared radius wrt cx,cy [pix^2]
+	  Q2cos,sin phi=0 and phi=45 (plus and cross) quadrupole [pix^2]
+	  Q3cos,sin phi=0 and phi=30 deg trefoil [pix^2]
+	  Q1cos,sin phi=0 and phi=90 deg monopole wrt highest pixel [pix^2]
+
+	It is important to understand that tphot is a tool, not a
+	complete processing machine.  In particular, work external to
+	tphot may be required.
+
+	  * Examples below illustrate how multiple executions of tphot
+	    are indicated to do the best job possible.  For example,
+	    the first run may be restricted to bright objects which
+	    can then be be processed in order of brightness and
+	    subtracted before passing to fainter objects.  Another
+	    example involves two images, one with trailed stars and
+	    the other with a trailed asteroid.
+
+	  * Tphot does not provide RA,Dec -- use astrometry.net and/or
+	    wcstools to convert tphot's x,y to RA,Dec, using whatever
+	    WCS or astrometry solution is available, and being mindful of
+	    the TSK convention if you care about half pixels.
+
+	  * Tphot does not try to automatically decide on star/galaxy
+	    identification, nor does it do galaxy profile fits.  Use
+	    sextractor, galfit, or other programs if you want such
+	    detail.  Because the relative density of galaxies and
+	    stars varies enormously with galactic latitude and
+	    magnitude limit, it is up to the user to judge what
+	    objects have a stellar PSF and which are extended.
+
+	  * Tphot provides fluxes with units of ADU.  If you want
+	    "instrumental magnitudes", calculate -2.5 the logarithm.
+	    If you want calibrated magnitudes, it is up to the user to
+	    provide a zeropoint or match the tphot detections to a
+	    catalog of stars of known magnitude and derive the
+	    zeropoint.  It is often the case that "instrumental
+	    magnitudes" in the range of about -12 to -7 provide the
+	    best SNR for such a determination, but that really stems
+	    from images that are the output of a 16-bit A/D converter,
+	    so is not a hard and fast guideline.  Paying attention to
+	    the flux uncertainties from tphot and whether the FWHM is
+	    stellar is probably the best way to decide which stars
+	    can contribute to determining a zeropoint.
+
+	If the "-invert" flag is turned on, tphot will invert the
+	sign of the image data values relative to the local sky level,
+	do the usual search, fit, and acceptance for positive-going
+	fluctuations, and then report a peak and flux that is multiplied
+	by -1.  The moment values, if requested, are of the positive-going
+	detection and are not adjusted for sign.  Tphot cannot find
+	both positive and negative detections in a single pass.
+
+OPTIONS:
+	Operations arguments:
+	---------------------
+	-out fname	[default stdout]
+		Output file name.  "-" specifies stdout.
+
+	-obj fname	[default stdout]
+		Read x,y from this file for triggers instead of searching
+		the image for pixels that satisfy the trigger criteria.
+		A line starting with # is ignored as a comment.  "-"
+		specifies stdin.
+
+	-resid fname	[default NULL]
+		Write a residual FITS image of the input with all successful
+		fits subtracted (leaving sky).
+
+	-moment fname	[default NULL]
+		Write moments for each output object.
+
+	-subtract	[default no]
+		Subtract fits successively from the image
+
+	-residsky	[default no]
+		Subtract sky model from residual image
+
+	-trail		[default no]
+		Fit a trailed Waussian instead of 2D Waussian
+
+	-bin N		[default 1]
+		Bin the input image by NxN
+
+	-invert		[default no]
+		Invert the sign of the image to find negative fluctuations.
+		The background level is not inverted.
+
+	-verb
+		Set diagnostic verbosity level to moderate
+
+	-VERB
+		Set diagnostic verbosity level to high, report on each object
+
+	-debug
+		Enable undocumented diagnostic output from psf2d fit...
+		Don't use this except in conjunction with perusal of the source.
+
+	-MP n		[default minimum of 4 and max threads available]
+		If compiled with OpenMP multiprocessing enabled, set the number
+		of threads to n.  This operates when for object detection and
+		fitting, not for an input file of objects.
+
+	-nitf
+		Insist that input image is NITF (should be auto-detected)
+
+	-cfits Insist reading input image with cfitsio (as opposed to
+		a more generic FITS reader).  This is useful for
+		cfitsio syntax for subarrays: myfile.fits[1:100,1:100],
+		and for reading fpack'ed files directly.
+
+	Noise, signal, and aperture arguments:
+	--------------------------------------
+	-eadu E		[default auto]
+		Set the e/ADU conversion from ADU to e-
+		If E is "auto" eadu will be determined as mean/variance
+
+	-bias B		[default 0]
+		Subtract B from image before processing
+
+	-wgt fname	[default none]
+		Use the values in file fname for fit weights.  Normally
+		these weights are inverse variance.  Note that this 
+		overrides the normal tphot noise model.
+
+	-var fname	[default none]
+		Use the values in file fname as the variance for each pixel.
+		Note that this overrides the normal tphot noise model.
+
+	-var3d		[default not]
+		If the input image is 3D FITS with pixel variance in the
+		second z plane, tphot uses the inverse variance as a pixel
+		weight.  Variance <= 0 is taken to be infinite.  Note that
+		this overrides the normal tphot noise model.
+
+	-nxsky M	[default 1]
+	-nysky N	[default 1]
+		Subdivide image into MxN chunks and interpolate median
+		sky level and noise across chunks
+
+	-mosaicsky      [default no]
+		Use a discontinuous sky and noise model of MxN chunks
+		from nxsky,nysky
+
+	-flatnorm F	[default max of flatfield]
+		Specify flatfield normalization factor as F
+	-flat fname	[default none]
+		Read FITS file fname and divide image by it normalized by F
+
+	-badata B	[default 0]
+	-badata <B	[default 0]
+	-badata >B	[default 0]
+		Data values of B (prior to bias adjustment) are ignored.  Using
+		a prefix of "<" or ">" causes data values less than or greater
+		than or equal to B to be ignored (e.g. "-badata <-100").
+
+	-sat S		[default 100000]
+		Saturation level is S
+
+	-aprad R	[default 15]
+		Set the photometry aperture radius to R
+
+	-skyrad R	[default 40]
+		Set the sky radius (well beyond FWHM) for photometry to R
+
+	Trigger arguments:
+	------------------
+	-border N	[default 2]
+	-xlft N		[default 2]
+	-xrgt N		[default 2]
+	-ybot N		[default 2]
+	-ytop N		[default 2]
+		Ignore pixels closer than N to border.  "-border" applies
+		to all borders, individual borders may also be specified.
+
+	-rad R		[default 5]
+		Trigger only if a pixel is local maximum within radius R
+
+	-sig S		[default 5]
+		Trigger only if value exceeds sky + S*rms
+
+	-min Zmin	[default 100]
+	-max Zmax	[default 100000]
+		Trigger only if value in excess of sky lies between
+		Zmin and Zmax 
+
+	-smooth X	[default 0]
+		Prepare a version of the image which has been smoothed by
+		a Gaussian of FWHM X, and trigger off of that image (but
+		perform fit on original image).
+
+	Fit arguments:
+	--------------
+	-major M
+	-minor N
+	-phi P
+		The fit is normally 7 params.  Instead, fit only 4 params
+		with PSF shape having major axis M, minor axis N, and
+		CCW angle from x axis to major axis of P [deg].
+
+	-npar N		[default 7]
+		A restricted fit can be specified with N=4 (position,
+		flux, and sky) or N=2 (flux and sky only).  N=4 is
+		also implicitly requested by providing major, minor,
+		and phi.  N=2 additionally requires that there be an input
+		file of object positions for "forced photometry".
+
+	-ninit N	[default 2]
+		If a trigger input file is provided, does it have N=2 or N=5
+		values for just x,y or x,y,major,minor,phi?
+
+	-psfpoly fname  [default NULL]
+		Instead of a fixed major,minor,phi specification of PSF
+		shape, read a file of polynomial coefficients for the
+		dophot-style a5,a6,a7, (sig_x^2, 1/sig_x/sig_y, sig_y^2).
+		Each row has three columns providing coefficients for each
+		of a5,a6,a7, rows correspond to coefficients 1, x,y,
+		x^2,xy,y^2, x^3,x^2y,xy^2,y^3.  These x,y are unscaled pixel
+		positions from the lower left.
+
+
+	Fit acceptance arguments:
+	-------------------------
+	-fwmin Wmin	[default 0.5]
+	-fwmax Wmax	[default 100]
+		Reject objects whose fit FWHM is outside of Wmin to Wmax
+
+	-net Z		[default 10]
+		Reject objects whose fitted (peak-sky) is less than Z
+
+	-move M		[default 3]
+		Reject objects whose fit position is farther than M from peak
+
+	-chin C		[default 1000]
+		Reject objects whose chi^2/N is greater than C
+
+	-snr S		[default -1]
+		Reject objects whose flux SNR is less than S (if S>0)
+
+	-okfit I	[default 1]
+		Reject objects if the PSF fit returned an error
+
+	-force		[default not]
+		Write output for objects regardless of acceptance tests.
+
+EXAMPLES:
+	Look for objects in a FITS file:
+
+	  tphot 11mar_07_17.fits -out /tmp/find.stars
+
+	Look for objects in a NITF file:
+
+	  tphot hiroshima_bay.ntf -out /tmp/find.japan
+
+	Write a residual FITS image as well as object list
+
+	  tphot 11mar_07_17.fits -out /tmp/find.stars -resid find.resid
+
+	An image with unsubtracted bias level of 1300, e/ADU known to be 4.5:
+
+	  tphot 11mar_07_17.fits -eadu 4.5 -bias 1300 
+
+	Zero mean image has 250 ADU of sky already subtracted:
+
+	  tphot 11mar_07_17.fits -bias -250
+
+	Try to dig out very faint objects:
+
+	  tphot 11mar_07_17.fits -sig 1 -min 1 -snr 5
+
+	Crowded and undersampled!  Bring down rad, aprad, and fwmin:
+
+	  tphot IC_334.fits -rad 3 -fwmin 0.1 -sig 1 -snr 5 -aprad 3 
+
+	Fixed PSF shape photometry.  Get PSF shape params from a first
+	run on bright objects, then rerun with these fixed:
+
+	  tphot IC_334.rot30 -out tmp.cat
+
+	  maj=`median tmp.cat col=10 | awk '{print $2}'`
+	  min=`median tmp.cat col=11 | awk '{print $2}'`
+	  phi=`median tmp.cat col=12 | awk '{print $2}'`
+
+	  tphot IC_334.rot30 -out IC_334.cat -rad 3 -sig 1 -snr 3 -aprad 3 \
+	          -major $maj -minor $min -phi $phi
+
+	If you lack access to JT's median, you can define a bash function:
+
+	  function median {
+	    n=`wc $1 | awk '{print $1}'`; 
+	    sort -g -k $col $1 | awk -v n=$n -v $2 'NR==n/2{median=$col} NR==n/4{lquart=$col} NR==(3*n)/4{uquart=$col} END{print n, median, lquart, uquart}'
+	  }
+
+	Find objects, refit in order of brightness, subtracting as we go:
+
+	  tphot IC_334.rot30 -snr 5 -aprad 4 -out obj.pass1
+	  sort -g -r -k 3 obj.pass1 > obj.srt
+	  tphot IC_334.rot30 -snr 5 -aprad 4 -subtract -obj obj.srt -out obj.cat
+
+	Note that this can also be accomplished without intermediate files:
+
+	  tphot IC_334.rot30 -snr 5 -aprad 4 | \
+	     sort -g -r -k 3 | \
+	     tphot IC_334.rot30 -snr 5 -aprad 4 -subtract -obj - -out obj.cat
+
+	Two images of an asteroid, one at sidereal rates with asteroid trailed,
+	the other tracking the asteroid with the stars trailed.  Note that it
+	may well be a good idea to use "-subtract" when using the "-trail"
+	option lest a single trail create many triggers.  This can also be
+	handled with the "-rad" argument if you know how long the trails are.
+	With the "-trail" option it is a good idea to loosen up on the "-move"
+	criteria because the triggering pixel can be well offset from the 
+	center of the trail.
+
+	  tphot starfix.fits -out starfix.dat
+	  tphot roidfix.fits -trail -move 10 -subtract -out roidfix.dat
+
+	The remaining steps would be to establish astrometry and
+	photometry from starfix.dat in the usual way, tie that to the
+	trailed star results (center of trail corresponding to the
+	middle of the exposure and flux estimate from trail length and width
+	peak*(trail+0.25)*FWHM) in roidfix.dat, and then use those
+	parameters and the asteroid information in roidfix.dat to get
+	a final position and magnitude for the asteroid.
+
+        Do a 7 parameter fit to a trailed object, providing x,y,maj,min,phi
+	from the command line: location is 161,127 in the $obs image,
+	major,minor,phi are 31,2.4,-66.  These are initial values for the
+	fit, but this is still a full, 7 parameter fit.  These can be
+	provided from a file instead.
+
+          echo 161 127 31 2.4 -66 | tphot $obs -trail -ninit 5 -obj -
+
+	Other desirable options for a zero mean difference might include
+
+	    -eadu 2 -badata -31415   -min 100 -bias -100
+
+
+BUGS AND CHANGES:
+	201027: use a simple header for -resid: robust for cfits/nitf
+	191001: add -psfpoly option
+	190105: add -var3d option
+	170621: add OpenMP multiprocessing for object detection and fitting
+	170614: fix bug when patch is too close to upper edges
+	140918: added external variance option; improved streaks from 5-param trigger
+	140415: added moment option
+	140116: patched up the edge infelicity with sky fitting
+	130612: fixed up some problems with 4 param trail fitting in psf2d
+	130611: changed the -min and -max to be in excess of sky, not including
+	        added -nxsky, -nysky, and -residsky to support non-constant sky
+		  and non-constant noise level
+	130108: implement lozenge aperture for trailed PSFs
+	121007: still under construction, could use:
+		* spatially varying sky estimate for trigger
+		* proper aperture photometry for trailed PSFs
+		* correct trailed PSF length bias or use Gaussian blur?
+
+SEE ALSO:
+	psf2d
+
+AUTHORS:
+	John Tonry
+
+VERSION:
